@@ -126,6 +126,16 @@ async def main():
         await client.disconnect()
         return
 
+    def build_filename(username, chat_id, timestamp, index=None):
+        """Build a filename stem as USERNAME(or id)_TIMESTAMP[_index]"""
+        name = username if username else str(chat_id)
+        # Sanitize for filesystem
+        name = re.sub(r'[\\/:*?"<>|]', '_', name)
+        stem = f"{name}_{timestamp}"
+        if index is not None:
+            stem = f"{stem}_{index}"
+        return stem
+
     def build_caption(message, chat_id, username, is_reply=False, is_album=False):
         """Build the formatted caption for a saved media message"""
         prefix = '┏' if not is_reply else '┣'
@@ -150,7 +160,9 @@ async def main():
                 if not msg.media:
                     continue
                 ext = 'jpg' if hasattr(msg.media, 'photo') and msg.media.photo else 'media'
-                path = await client.download_media(msg.media, f'secret_album_{msg.id}.{ext}')
+                ts = datetime.now(timezone('Asia/Tehran')).strftime('%Y%m%d_%H%M%S')
+                stem = build_filename(username, chat_id, ts, index=len(file_paths))
+                path = await client.download_media(msg.media, f'{stem}.{ext}')
                 if path:
                     file_paths.append(path)
 
@@ -184,13 +196,16 @@ async def main():
             caption = build_caption(message, chat_id, username, is_reply=is_reply, is_album=False)
             label = f"{chat_title}{' (replied message)' if is_reply else ''}"
 
+            ts = datetime.now(timezone('Asia/Tehran')).strftime('%Y%m%d_%H%M%S')
+            stem = build_filename(username, chat_id, ts)
+
             if hasattr(message.media, 'photo') and message.media.photo:
                 print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive photo in {label}. Downloading...', end='')
-                file_path = await client.download_media(message.media, 'secret_photo.jpg')
+                file_path = await client.download_media(message.media, f'{stem}.jpg')
                 media_type = 'photo'
             elif hasattr(message.media, 'document') and message.media.document:
                 print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive media in {label}. Downloading...', end='')
-                file_path = await client.download_media(message.media, 'secret_media')
+                file_path = await client.download_media(message.media, f'{stem}.media')
                 media_type = 'media'
             else:
                 return
