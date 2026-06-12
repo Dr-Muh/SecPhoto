@@ -13,12 +13,18 @@ async def main():
         import os
         import getpass
         import re
+        import asyncio
         from jdatetime import datetime
         from pytz import timezone
         import sqlite3
     except ImportError:
         print(' [!] Please install dependencies~> python3 -m pip install -r requirements.txt')
         exit(0)
+
+    # Album buffer: grouped_id -> list of messages, keyed per chat
+    # Structure: { (chat_id, grouped_id): [msg, ...] }
+    album_buffer = {}
+    album_tasks = {}
 
     def get_phone_number():
         """Get phone number with validation for international format"""
@@ -38,10 +44,10 @@ async def main():
                 return True
         except Exception:
             pass
-        
+
         print(f" {Fore.YELLOW}[{Fore.CYAN}!{Fore.YELLOW}]{Fore.RESET} Authentication required...")
         phone_number = get_phone_number()
-        
+
         try:
             sent_code_request = await client.send_code_request(phone=phone_number)
             code = input(f" {Fore.YELLOW}[{Fore.GREEN}<{Fore.YELLOW}]{Fore.RESET} Enter your verification code: ")
@@ -89,6 +95,7 @@ async def main():
 
       This tool automatically monitors all chats for self-destructive media and saves them.
       It also checks replied messages for self-destructive media and saves those too.
+      Albums (grouped media) are fully supported and forwarded as a single album.
     ''')
         exit(0)
 
@@ -119,59 +126,143 @@ async def main():
         await client.disconnect()
         return
 
-    async def process_self_destructive_media(message, chat_title, chat_id, username, is_reply=False):
-        """Process self-destructive media from a message"""
+    def build_caption(message, chat_id, username, is_reply=False, is_album=False):
+        """Build the formatted caption for a saved media message"""
+        prefix = '┏' if not is_reply else '┣'
+        album_line = f"┣ᗩᒪᗷᑌᗰ ⤳ ✓{chr(10)}" if is_album else ""
+        caption = (
+            f"{prefix}ᑕᕼᗩT Iᗪ ⤳ <a href=\"tg://user?id={chat_id}\">{chat_id}</a>\n"
+            f"{album_line}"
+            f"┣ᑌՏᗴᖇᑎᗩᗰᗴ ⤳ {'@' + username if username else '✗'}\n"
+            f"┣ᗰᗴՏՏᗩᘜᗴ Iᗪ ⤳ {message.id}\n"
+            f"┣ᗪᗩTᗴ TIᗰᗴ ⤳ {datetime.now(timezone('Asia/Tehran')).strftime('%Y/%m/%d %H:%M:%S')}\n"
+            f"┗ github.com/Mr3rf1\n"
+        )
+        if is_reply:
+            caption = f"┏ᖇᗴᑭᒪIᗴᗴᗪ TO ᗰᗴՏՏᗩᘜᗴ\n" + caption
+        return caption
+
+    async def process_album(messages, chat_title, chat_id, username, is_reply=False):
+        """Download and forward an album (grouped media) as a single album"""
         try:
-            caption = f"""{'┏' if not is_reply else '┣'}ᑕᕼᗩT Iᗪ ⤳ <a href="tg://user?id={chat_id}">{chat_id}</a>
-┣ᑌՏᗴᖇᑎᗩᗰᗴ ⤳ {'@' + username if username else '✗'}
-┣ᗰᗴՏՏᗩᘜᗴ Iᗪ ⤳ {message.id}
-┣ᗪᗩTᗴ TIᗰᗴ ⤳ {datetime.now(timezone('Asia/Tehran')).strftime("%Y/%m/%d %H:%M:%S")}
-┗ github.com/Mr3rf1
-"""
-            if is_reply:
-                caption = f"┏ᖇᗴᑭᒪIᗴᗴᗪ TO ᗰᗴՏՏᗩᘜᗴ{chr(10)}" + caption
+            file_paths = []
+            for msg in messages:
+                if not msg.media:
+                    continue
+                ext = 'jpg' if hasattr(msg.media, 'photo') and msg.media.photo else 'media'
+                path = await client.download_media(msg.media, f'secret_album_{msg.id}.{ext}')
+                if path:
+                    file_paths.append(path)
+
+            if not file_paths:
+                return
+
+            caption = build_caption(messages[0], chat_id, username, is_reply=is_reply, is_album=True)
+            label = f"{chat_title}{' (replied message)' if is_reply else ''}"
+            print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Saving album ({len(file_paths)} items) from {label}...', end='')
+
+            file_handles = [open(p, 'rb') for p in file_paths]
+            try:
+                await client.send_file('me', file_handles, caption=caption, parse_mode='html')
+            finally:
+                for fh in file_handles:
+                    fh.close()
+
+            print(f'\r {Fore.YELLOW}[{Fore.GREEN}!{Fore.YELLOW}]{Fore.RESET} Album ({len(file_paths)} items) from {label} saved to your messages')
+
+            for p in file_paths:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f' {Fore.YELLOW}[{Fore.RED}ERROR{Fore.YELLOW}]{Fore.RESET} Failed to process album: {str(e)}')
+
+    async def process_single_media(message, chat_title, chat_id, username, is_reply=False):
+        """Process a single self-destructive media message"""
+        try:
+            caption = build_caption(message, chat_id, username, is_reply=is_reply, is_album=False)
+            label = f"{chat_title}{' (replied message)' if is_reply else ''}"
 
             if hasattr(message.media, 'photo') and message.media.photo:
-                print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive photo in {chat_title}{" (from replied message)" if is_reply else ""}. Downloading...', end='')
+                print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive photo in {label}. Downloading...', end='')
                 file_path = await client.download_media(message.media, 'secret_photo.jpg')
-                if file_path:
-                    with open(file_path, 'rb') as file:
-                        await client.send_file('me', file, caption=caption, parse_mode='html')
-                    print(f'\r {Fore.YELLOW}[{Fore.GREEN}!{Fore.YELLOW}]{Fore.RESET} Secret photo from {chat_title}{" (replied message)" if is_reply else ""} saved to your messages')
-                    os.remove(file_path)
+                media_type = 'photo'
             elif hasattr(message.media, 'document') and message.media.document:
-                print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive media in {chat_title}{" (from replied message)" if is_reply else ""}. Downloading...', end='')
+                print(f' {Fore.YELLOW}[{Fore.RED}!{Fore.YELLOW}]{Fore.RESET} Found self-destructive media in {label}. Downloading...', end='')
                 file_path = await client.download_media(message.media, 'secret_media')
-                if file_path:
-                    with open(file_path, 'rb') as file:
-                        await client.send_file('me', file, caption=caption, parse_mode='html')
-                    print(f'\r {Fore.YELLOW}[{Fore.GREEN}!{Fore.YELLOW}]{Fore.RESET} Secret media from {chat_title}{" (replied message)" if is_reply else ""} saved to your messages')
-                    os.remove(file_path)
+                media_type = 'media'
+            else:
+                return
+
+            if file_path:
+                with open(file_path, 'rb') as file:
+                    await client.send_file('me', file, caption=caption, parse_mode='html')
+                print(f'\r {Fore.YELLOW}[{Fore.GREEN}!{Fore.YELLOW}]{Fore.RESET} Secret {media_type} from {label} saved to your messages')
+                os.remove(file_path)
         except Exception as e:
             print(f' {Fore.YELLOW}[{Fore.RED}ERROR{Fore.YELLOW}]{Fore.RESET} Failed to process self-destructive media: {str(e)}')
 
+    def is_self_destructive(message):
+        """Return True if the message contains self-destructive (ttl) media"""
+        return (
+            message.media is not None
+            and hasattr(message.media, 'ttl_seconds')
+            and message.media.ttl_seconds
+        )
+
+    async def flush_album(key, chat_title, chat_id, username, is_reply=False):
+        """Wait briefly to collect all album parts, then process them together"""
+        await asyncio.sleep(0.6)  # short debounce to gather all grouped messages
+        messages = album_buffer.pop(key, [])
+        album_tasks.pop(key, None)
+        if messages:
+            # Sort by message id to preserve order
+            messages.sort(key=lambda m: m.id)
+            await process_album(messages, chat_title, chat_id, username, is_reply=is_reply)
+
+    async def handle_message(message, chat_title, chat_id, username, is_reply=False):
+        """Route a message to single or album processing based on grouped_id"""
+        if not is_self_destructive(message):
+            return
+
+        grouped_id = getattr(message, 'grouped_id', None)
+
+        if grouped_id:
+            key = (chat_id, grouped_id)
+            if key not in album_buffer:
+                album_buffer[key] = []
+            album_buffer[key].append(message)
+
+            # Cancel existing flush task and restart debounce timer
+            if key in album_tasks and not album_tasks[key].done():
+                album_tasks[key].cancel()
+            album_tasks[key] = asyncio.ensure_future(
+                flush_album(key, chat_title, chat_id, username, is_reply=is_reply)
+            )
+        else:
+            await process_single_media(message, chat_title, chat_id, username, is_reply=is_reply)
+
     @client.on(events.NewMessage)
     async def handler(event):
-        # Check if the current message has self-destructive media
-        if event.message.media and hasattr(event.message.media, 'ttl_seconds') and event.message.media.ttl_seconds:
-            try:
-                chat = await event.get_chat()
-                chat_title = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
-                username = getattr(chat, 'username', None)
-                await process_self_destructive_media(event.message, chat_title, event.chat_id, username, False)
-            except Exception as e:
-                print(f' {Fore.YELLOW}[{Fore.RED}ERROR{Fore.YELLOW}]{Fore.RESET} Failed to process self-destructive media: {str(e)}')
-        
-        # Check if this message is a reply to another message
+        try:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
+            username = getattr(chat, 'username', None)
+        except Exception as e:
+            print(f' {Fore.YELLOW}[{Fore.RED}ERROR{Fore.YELLOW}]{Fore.RESET} Could not get chat info: {str(e)}')
+            return
+
+        # Handle current message (single or album)
+        if event.message.media:
+            await handle_message(event.message, chat_title, event.chat_id, username, is_reply=False)
+
+        # Handle replied-to message if present
         if event.message.reply_to_msg_id:
             try:
-                # Get the replied-to message
                 replied_message = await event.get_reply_message()
-                if replied_message and replied_message.media and hasattr(replied_message.media, 'ttl_seconds') and replied_message.media.ttl_seconds:
-                    chat = await event.get_chat()
-                    chat_title = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
-                    username = getattr(chat, 'username', None)
-                    await process_self_destructive_media(replied_message, chat_title, event.chat_id, username, True)
+                if replied_message and replied_message.media:
+                    await handle_message(replied_message, chat_title, event.chat_id, username, is_reply=True)
             except Exception as e:
                 print(f' {Fore.YELLOW}[{Fore.RED}ERROR{Fore.YELLOW}]{Fore.RESET} Failed to process replied message: {str(e)}')
 
