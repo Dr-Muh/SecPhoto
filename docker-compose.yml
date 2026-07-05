@@ -1,0 +1,13 @@
+services:
+  telegram-bot:
+    image: secphoto:latest
+    stdin_open: true   # docker run -i
+    tty: true          # docker run -t
+    container_name: telegram-secphoto
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TG_API_ID=${TG_API_ID}
+      - TG_API_HASH=${TG_API_HASH}
+      - TZ=Europe/Berlin
