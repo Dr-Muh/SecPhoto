@@ -1,5 +1,6 @@
 Build the image for Linux amd64 (secphoto.tar already compiled)
 docker build --platform linux/amd64 -t secphoto .
+docker save -o secphoto.tar secphoto
 
 load the docker image
 docker load -i telegram-bot.tar

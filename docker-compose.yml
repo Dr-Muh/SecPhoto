@@ -10,4 +10,5 @@ services:
     environment:
       - TG_API_ID=${TG_API_ID}
       - TG_API_HASH=${TG_API_HASH}
+      - TG_EXCLUDED_USERS=${TG_EXCLUDED_USERS}
       - TZ=Europe/Berlin
