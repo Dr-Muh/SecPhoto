@@ -23,15 +23,15 @@ async def main():
         import getpass
         import re
         import asyncio
-        from jdatetime import datetime
-        from pytz import timezone
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
         import sqlite3
     except ImportError:
         print(' [!] Please install dependencies~> python3 -m pip install -r requirements.txt')
         exit(0)
 
     try:
-        app_timezone = timezone(timezone_name)
+        app_timezone = ZoneInfo(timezone_name)
     except Exception as e:
         print(f"Invalid TG_TIMEZONE value '{timezone_name}': {str(e)}")
         exit(0)
