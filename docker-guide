@@ -3,7 +3,7 @@ docker build --platform linux/amd64 -t secphoto .
 docker save -o secphoto.tar secphoto
 
 load the docker image
-docker load -i telegram-bot.tar
+docker load -i secphoto.tar
 
 create stack in portainer
 add credentials to container env

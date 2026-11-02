@@ -10,4 +10,4 @@ COPY . .
 # Where the .session file and sqlite db will live — mount this as a volume
 VOLUME ["/app/data"]
 
-CMD ["python3", "-u", "SecPhoto-docker.py"]
+CMD ["python3", "-u", "-m", "secphoto"]
