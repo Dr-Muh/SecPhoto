@@ -4,6 +4,7 @@ from telethon.utils import get_peer_id
 from . import config
 from .archive import adopt_archive, create_or_sync_archive
 from .chats import create_private_channel
+from .export import DEFAULT_LIMIT, export_chat
 
 
 async def get_command_channel(client, state):
@@ -57,6 +58,16 @@ async def handle_command(app, event):
             await list_chats(app, command[len("/chats"):].strip())
         except Exception as e:
             await app.report_error(f"Listing chats failed: {str(e)}")
+    elif command == "/export" or command.startswith("/export "):
+        args = command.split()[1:]
+        if not 1 <= len(args) <= 2 or (len(args) == 2 and not args[1].isdigit()):
+            await app.notify(f"Usage: /export <chat> [limit], default limit is {DEFAULT_LIMIT}.")
+            return
+        limit = int(args[1]) if len(args) == 2 else DEFAULT_LIMIT
+        try:
+            await export_chat(app, args[0], limit)
+        except Exception as e:
+            await app.report_error(f"Export failed: {str(e)}")
     elif command.startswith("/archive "):
         try:
             await create_or_sync_archive(app, command.split(None, 1)[1].strip())
