@@ -28,15 +28,45 @@ async def discover_archive_state(client, state):
                     "source_id": int(source_id),
                     "archive_id": get_peer_id(channel),
                     "source": marker.split(" source=", 1)[-1],
+                    "copy_mode": " mode=copy " in marker,
                 }
                 state.save()
                 print(f"Recovered archive state from {title}")
                 return
 
 
-async def copy_message_to_archive(client, message, source, archive_channel):
-    """Copy one message, falling back when forwarding is restricted."""
+async def reupload_message(client, message, archive_channel):
+    """Download and re-send a message; works even when the source restricts saving content."""
+    config.archive_tmp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = await client.download_media(message, str(config.archive_tmp_dir)) if message.media else None
     try:
+        if temp_path:
+            return await client.send_file(
+                archive_channel,
+                temp_path,
+                caption=message.message or "",
+                formatting_entities=message.entities,
+            )
+        if message.message:
+            return await client.send_message(
+                archive_channel, message.message, formatting_entities=message.entities
+            )
+        return await client.send_message(archive_channel, "[Message without text]")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+async def copy_message_to_archive(client, message, source, archive_channel, copy_mode=False):
+    """Copy one message to the archive.
+
+    By default the message is forwarded. With copy_mode it is re-sent as a new
+    message without the "Forwarded from" header, keeping text, formatting and media.
+    Either way, content that cannot be sent directly is downloaded and re-uploaded.
+    """
+    try:
+        if copy_mode:
+            return await client.send_message(archive_channel, message)
         copied = await client.forward_messages(
             archive_channel, message, from_peer=source
         )
@@ -44,19 +74,7 @@ async def copy_message_to_archive(client, message, source, archive_channel):
     except FloodWaitError:
         raise
     except Exception:
-        config.archive_tmp_dir.mkdir(parents=True, exist_ok=True)
-        temp_path = await client.download_media(message, str(config.archive_tmp_dir)) if message.media else None
-        try:
-            if temp_path:
-                return await client.send_file(
-                    archive_channel, temp_path, caption=message.message or ""
-                )
-            if message.message:
-                return await client.send_message(archive_channel, message.message)
-            return await client.send_message(archive_channel, "[Message without text]")
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+        return await reupload_message(client, message, archive_channel)
 
 
 async def backfill_archive(app, source, archive_channel):
@@ -64,11 +82,14 @@ async def backfill_archive(app, source, archive_channel):
     state = app.state
     count = 0
     last_message_id = state.archive.get("last_source_message_id", 0)
+    copy_mode = state.archive.get("copy_mode", False)
     async for message in app.client.iter_messages(source, reverse=True):
         if message.id <= last_message_id:
             continue
         try:
-            await copy_message_to_archive(app.client, message, source, archive_channel)
+            await copy_message_to_archive(
+                app.client, message, source, archive_channel, copy_mode
+            )
         except FloodWaitError as e:
             state.save()
             print(
@@ -84,7 +105,9 @@ async def backfill_archive(app, source, archive_channel):
     return count, False
 
 
-async def create_or_sync_archive(app, chat_spec):
+async def create_or_sync_archive(app, chat_spec, copy_mode=False):
+    """Create or resume an archive. copy_mode re-sends messages instead of forwarding them;
+    once enabled for an archive it stays enabled."""
     client = app.client
     state = app.state
     async with state.lock:
@@ -93,6 +116,9 @@ async def create_or_sync_archive(app, chat_spec):
         existing = state.archive
         if existing and existing.get("source_id") == source_id:
             archive_channel = await client.get_entity(int(existing["archive_id"]))
+            if copy_mode and not existing.get("copy_mode"):
+                existing["copy_mode"] = True
+                state.save()
             await app.notify(f"Syncing existing archive for {chat_spec}...")
         else:
             title = getattr(source, "title", None) or getattr(source, "first_name", None) or str(chat_spec)
@@ -106,11 +132,13 @@ async def create_or_sync_archive(app, chat_spec):
                 "archive_id": get_peer_id(archive_channel),
                 "source": str(chat_spec),
                 "last_source_message_id": 0,
+                "copy_mode": copy_mode,
             }
             state.save()
+            mode = " mode=copy" if copy_mode else ""
             await client.send_message(
                 archive_channel,
-                f"{METADATA_PREFIX}{source_id} source={chat_spec}",
+                f"{METADATA_PREFIX}{source_id}{mode} source={chat_spec}",
             )
 
         count, paused = await backfill_archive(app, source, archive_channel)
@@ -145,7 +173,9 @@ async def mirror_message(app, chat_id, chat, message):
         return
     try:
         archive_channel = await app.client.get_entity(int(archive["archive_id"]))
-        await copy_message_to_archive(app.client, message, chat, archive_channel)
+        await copy_message_to_archive(
+            app.client, message, chat, archive_channel, archive.get("copy_mode", False)
+        )
     except Exception as e:
         print(f"Failed to mirror message {message.id}: {str(e)}")
 

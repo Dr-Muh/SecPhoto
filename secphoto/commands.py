@@ -55,7 +55,7 @@ HELP_TEXT = f"""SecPhoto commands:
 /help - show this message
 /chats [filter] - list chat IDs and names, optionally filtered by name
 /export <chat> [limit] - export recent messages to a Markdown file (default limit {DEFAULT_LIMIT})
-/archive <chat> - create or sync an archive channel for a chat
+/archive <chat> [--copy] - create or sync an archive channel for a chat; --copy re-sends messages instead of forwarding them
 /archive-adopt <archive> <source> - adopt an existing archive channel for a source chat
 /archive-status - show the current archive configuration
 /archive-stop - stop live archive mirroring"""
@@ -81,11 +81,19 @@ async def handle_command(app, event):
         except Exception as e:
             await app.report_error(f"Export failed: {str(e)}")
     elif command in ("/archive", "/archive-adopt"):
-        usage = "/archive <chat>" if command == "/archive" else "/archive-adopt <archive> <source>"
+        usage = "/archive <chat> [--copy]" if command == "/archive" else "/archive-adopt <archive> <source>"
         await app.notify(f"Usage: {usage}")
     elif command.startswith("/archive "):
         try:
-            await create_or_sync_archive(app, command.split(None, 1)[1].strip())
+            args = command.split()[1:]
+            # Some Telegram clients turn "--" into an em dash.
+            copy_flags = ("--copy", "\u2014copy")
+            copy_mode = any(arg in copy_flags for arg in args)
+            chat_spec = " ".join(arg for arg in args if arg not in copy_flags)
+            if not chat_spec:
+                await app.notify("Usage: /archive <chat> [--copy]")
+                return
+            await create_or_sync_archive(app, chat_spec, copy_mode)
         except Exception as e:
             await app.report_error(f"Archive failed: {str(e)}")
     elif command.startswith("/archive-adopt "):
@@ -100,8 +108,10 @@ async def handle_command(app, event):
     elif command == "/archive-status":
         archive = app.state.archive
         if archive:
+            mode = "copy" if archive.get("copy_mode") else "forward"
             await app.notify(
                 f"Source: {archive['source']}\nArchive channel ID: {archive['archive_id']}\n"
+                f"Mode: {mode}\n"
                 f"Last source message: {archive.get('last_source_message_id', 0)}"
             )
         else:
