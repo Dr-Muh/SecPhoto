@@ -51,9 +51,21 @@ async def list_chats(app, name_filter):
     await app.notify_lines(f"{len(lines)} chat{'s' if len(lines) != 1 else ''}:", lines)
 
 
+HELP_TEXT = f"""SecPhoto commands:
+/help - show this message
+/chats [filter] - list chat IDs and names, optionally filtered by name
+/export <chat> [limit] - export recent messages to a Markdown file (default limit {DEFAULT_LIMIT})
+/archive <chat> - create or sync an archive channel for a chat
+/archive-adopt <archive> <source> - adopt an existing archive channel for a source chat
+/archive-status - show the current archive configuration
+/archive-stop - stop live archive mirroring"""
+
+
 async def handle_command(app, event):
     command = (event.raw_text or "").strip()
-    if command == "/chats" or command.startswith("/chats "):
+    if command == "/help":
+        await app.notify(HELP_TEXT)
+    elif command == "/chats" or command.startswith("/chats "):
         try:
             await list_chats(app, command[len("/chats"):].strip())
         except Exception as e:
@@ -68,6 +80,9 @@ async def handle_command(app, event):
             await export_chat(app, args[0], limit)
         except Exception as e:
             await app.report_error(f"Export failed: {str(e)}")
+    elif command in ("/archive", "/archive-adopt"):
+        usage = "/archive <chat>" if command == "/archive" else "/archive-adopt <archive> <source>"
+        await app.notify(f"Usage: {usage}")
     elif command.startswith("/archive "):
         try:
             await create_or_sync_archive(app, command.split(None, 1)[1].strip())
@@ -95,3 +110,5 @@ async def handle_command(app, event):
         app.state.data.pop("archive", None)
         app.state.save()
         await app.notify("Live archive mirroring stopped.")
+    elif command.startswith("/"):
+        await app.notify(f"Unknown command: {command.split()[0]}. Send /help for a list of commands.")
